@@ -1,4 +1,4 @@
-##HOW TO USE
+# HOW TO USE
 Install Dependencies
 ```
 pip install - r requirements.txt
