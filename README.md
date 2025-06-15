@@ -5,5 +5,5 @@ pip install - r requirements.txt
 ```
 Run Web
 ```
-stramlit run web.py
+streamlit run web.py
 ```
