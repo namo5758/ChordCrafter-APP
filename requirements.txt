@@ -1,7 +1,7 @@
 streamlit
 torch==2.6.0
 transformers==4.52.4
-pychord==1.2.2
-numpy
+pychord 
+soundfile
+numpy 
 scipy
-soundfile==0.10.1
