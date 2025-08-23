@@ -5,3 +5,4 @@ pychord
 soundfile
 numpy 
 scipy
+pretty_midi
