@@ -39,10 +39,11 @@ def main():
             try:
                 audio_bytes, skipped, errors = ca.generate_audio(
                     new_chords,
-                    chord_dur=2.0,          # 1 bar at 120 BPM if you want a longer bar, adjust
-                    tempo=120,              # the metronome / beat spacing
-                    include_metronome=True, # click track
-                    four_four_restrike=True # chord hits on 1 2 3 4
+                    chord_dur=2.0,           # 1 bar @ 120 BPM
+                    tempo=120,
+                    instrument="guitar",     # try "epiano", "organ", "saw", "pad", etc.
+                    include_metronome=True,
+                    four_four_restrike=True
                 )
                 if skipped:
                     st.warning("Skipped tokens: " + ", ".join(skipped))
