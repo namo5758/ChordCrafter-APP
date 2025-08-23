@@ -1,8 +1,12 @@
+# chord_audi.py
 from __future__ import annotations
 
 import io
 import re
 import inspect
+import zipfile
+import tempfile
+import requests
 from typing import List, Optional, Tuple, Union
 from pathlib import Path
 
@@ -11,20 +15,32 @@ import soundfile as sf
 import pretty_midi
 
 
+# --------------------------- Globals & Defaults ------------------------------
+
 SAMPLE_RATE   = 22050
 DEFAULT_OCT   = 4
-DEFAULT_TEMPO = 120        
-DEFAULT_PROG  = 2 
+DEFAULT_TEMPO = 120          # BPM
+DEFAULT_PROG  = 0            # 0 = Acoustic Grand Piano (GM)
 
-MET_CLICK_FREQ = 2000.0
-MET_CLICK_MS   = 12.0
-MET_CLICK_GAIN = 0.30
+# Metronome (click on each beat; beat 1 accent)
+MET_CLICK_FREQ     = 2000.0
+MET_CLICK_MS       = 12.0
+MET_CLICK_GAIN_1   = 0.42    # downbeat
+MET_CLICK_GAIN_OTH = 0.28    # beats 2-4
 
+# Where to look for a local SoundFont inside the repo
 _THIS_DIR = Path(__file__).resolve().parent
 _DEFAULT_SF_CANDIDATES = [
     _THIS_DIR / "assets"  / "sf2" / "GXSCC_gm_033.sf2",  # correct folder
     _THIS_DIR / "assests" / "sf2" / "GXSCC_gm_033.sf2",  # misspelled folder
 ]
+
+# Cloud-friendly auto-download target (use /tmp on Streamlit Cloud)
+SF2_URL      = "https://www.woolyss.com/chipmusic/chipmusic-soundfonts/GXSCC_gm_033.zip"
+SF2_BASENAME = "GXSCC_gm_033.sf2"
+SF2_DIR      = Path(tempfile.gettempdir()) / "sf2"
+SF2_PATH     = SF2_DIR / SF2_BASENAME
+
 
 # --------------------------- Token → MIDI Parser -----------------------------
 
@@ -42,6 +58,7 @@ _SEMITONE = {
 # normalize odd spellings from the tokenizer
 _RE_MIN = re.compile(r"(?i)\bmin(?=\d|$)")
 _RE_MAJ = re.compile(r"(?i)\bmaj(?=\d|$)")
+
 def _normalize_rest(rest: str) -> str:
     s = rest.strip()
     if not s:
@@ -66,32 +83,28 @@ def _letter_acc_to_semi(letter: str, acc: str) -> int:
 
 def _parse_root_bass(token: str) -> Tuple[int, Optional[int], str]:
     """
-    Robustly split token into (root_semi, optional bass_semi, rest).
+    Split token into (root_semi, optional bass_semi, rest).
     Handles:
-      - F/A, D/Fs, Bb/C, etc.
+      - F/A, D/Fs, Bb/C
       - Gsus4 (does NOT become G# + 'us4')
-      - Strips stray whitespace or trailing junk after bass (e.g., 'F/A ').
     """
     token = token.strip()
 
-    # Fast path: if token is exactly a plain slash chord like F/A or D/Fs
+    # Exact slash chord like F/A or D/Fs
     m_plain_slash = re.match(r"^([A-G])([sb]*)/([A-G])([sb]*)$", token)
-    bass_semi = None
     if m_plain_slash:
         rL, rA, bL, bA = m_plain_slash.groups()
-        # root has no extra "rest" -> implies a major triad
-        root_semi = _letter_acc_to_semi(rL, rA)
-        bass_semi = _letter_acc_to_semi(bL, bA)
+        root_semi = _letter_acc_to_semi(rL, rA or "")
+        bass_semi = _letter_acc_to_semi(bL, bA or "")
         return root_semi, bass_semi, ""
 
-    # General case: split once
+    # General case
     if "/" in token:
         main, bass = token.split("/", 1)
         bass = bass.strip()
     else:
         main, bass = token, None
 
-    # parse main: letter + accidental (sb...) + rest
     m = re.match(r"^([A-G])([sb]*)?(.*)$", main.strip())
     if not m:
         raise ValueError(f"Cannot parse root in '{token}'")
@@ -106,13 +119,12 @@ def _parse_root_bass(token: str) -> Tuple[int, Optional[int], str]:
 
     root_semi = _letter_acc_to_semi(letter, acc)
 
-    # parse bass (optional)
+    bass_semi: Optional[int] = None
     if bass:
         m2 = re.match(r"^([A-G])([sb]*)", bass)  # stop at non-[sb]
         if m2:
             bL, bA = m2.groups()
-            bA = bA or ""
-            bass_semi = _letter_acc_to_semi(bL, bA)
+            bass_semi = _letter_acc_to_semi(bL, (bA or ""))
 
     return root_semi, bass_semi, _normalize_rest(rest)
 
@@ -160,7 +172,7 @@ def chord_token_to_midinums(token: str, base_octave: int = DEFAULT_OCT) -> List[
     """
     Convert token into MIDI notes.
     - If no quality given (e.g., 'F/A'), assume MAJOR triad on root.
-    - Root chord is voiced around (base_octave+1); slash bass one octave below.
+    - Root chord voiced around (base_octave+1); slash bass one octave below.
     """
     token = token.strip()
     if not token:
@@ -182,11 +194,11 @@ def chord_token_to_midinums(token: str, base_octave: int = DEFAULT_OCT) -> List[
     if bass_semi is not None:
         notes.append(bass_semi + 12 * base_octave)
 
-    # keep unique + sorted
     out = sorted(set(int(n) for n in notes if 0 <= n <= 127))
     if not out:
         raise ValueError(f"No playable pitches for '{token}'")
     return out
+
 
 # --------------------------- Rendering Helpers -------------------------------
 
@@ -210,12 +222,30 @@ def _try_existing_path(p: Union[str, Path]) -> Optional[str]:
         return p
     return None
 
+def _download_sf2_to_tmp() -> str:
+    SF2_DIR.mkdir(parents=True, exist_ok=True)
+    if SF2_PATH.exists():
+        return str(SF2_PATH)
+
+    # download and extract the first .sf2 inside the ZIP
+    r = requests.get(SF2_URL, timeout=60)
+    r.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        member = next((m for m in zf.namelist() if m.lower().endswith(".sf2")), None)
+        if not member:
+            raise RuntimeError("No .sf2 found inside downloaded ZIP")
+        with zf.open(member) as fsrc, open(SF2_PATH, "wb") as fdst:
+            fdst.write(fsrc.read())
+    if not SF2_PATH.exists():
+        raise RuntimeError(f"Failed to materialize SoundFont at {SF2_PATH}")
+    return str(SF2_PATH)
+
 def _resolve_soundfont_path(user_path: Optional[Union[str, Path]]) -> str:
     """
     Priority:
       1) user_path (if provided and exists)
-      2) ./assets/sf2/GXSCC_gm_033.sf2
-      3) ./assests/sf2/GXSCC_gm_033.sf2
+      2) local candidates (./assets/sf2/... or ./assests/sf2/...)
+      3) auto-download to /tmp and use that
     """
     if user_path:
         found = _try_existing_path(user_path)
@@ -227,12 +257,7 @@ def _resolve_soundfont_path(user_path: Optional[Union[str, Path]]) -> str:
         if found:
             return found
 
-    raise FileNotFoundError(
-        "SoundFont (.sf2) not found.\nChecked:\n"
-        + (f" - {user_path}\n" if user_path else "")
-        + "".join(f" - {c}\n" for c in _DEFAULT_SF_CANDIDATES)
-        + "Provide a valid path to a .sf2 file (e.g., assets/sf2/GXSCC_gm_033.sf2)."
-    )
+    return _download_sf2_to_tmp()
 
 def _render_with_fluidsynth(pm: pretty_midi.PrettyMIDI, sf2_path: str, sr: int) -> np.ndarray:
     """
@@ -242,7 +267,7 @@ def _render_with_fluidsynth(pm: pretty_midi.PrettyMIDI, sf2_path: str, sr: int) 
       - fluidsynth(sample_rate=..., sf2_path=...)
       - fluidsynth(samplerate=...,  sf2_path=...)
       - fluidsynth(fs=...,          sf2_path=...)
-    Detect the parameter names and call with keywords to avoid positional mixups.
+    Detect parameter names and call with keywords to avoid positional mixups.
     """
     sig = inspect.signature(pm.fluidsynth)
     params = sig.parameters
@@ -264,25 +289,27 @@ def _render_with_fluidsynth(pm: pretty_midi.PrettyMIDI, sf2_path: str, sr: int) 
     audio = np.asarray(audio, dtype=np.float32)
     return np.clip(audio, -1.0, 1.0)
 
+
 # --------------------------- Public API --------------------------------------
 
 def generate_audio(
     chords: List[str],
-    chord_dur: float = 1.0,           # seconds per chord
+    chord_dur: float = 1.0,           # seconds per chord (treat as 1 bar of 4/4)
     tempo: int = DEFAULT_TEMPO,       # metronome tempo
-    soundfont_path: Optional[Union[str, Path]] = None,  # None → auto-resolve
-    program: int = DEFAULT_PROG,      # GM program (0=piano)
+    soundfont_path: Optional[Union[str, Path]] = None,  # None → resolve/download
+    program: int = DEFAULT_PROG,      # GM program (0..127)
     octave: int = DEFAULT_OCT,
-    include_metronome: bool = False
+    include_metronome: bool = False,
+    placement: str = "on_1",          # "on_1" | "on_all" | "stabs_234"
+    stab_ms: float = 110.0,           # length of short stabs (ms) for "stabs_234"
 ) -> Tuple[bytes, List[str], List[str]]:
     """
     Returns (wav_bytes, skipped, errors)
 
-    - 'chords' is a list of model tokens (e.g., ['Dmin','G','Amin','D7','G7sus4','Bb','F/A',...]).
-    - 'soundfont_path' if None, will be resolved to assets/sf2/GXSCC_gm_033.sf2 (or 'assests/...' fallback).
-    - 'program' is General MIDI program number (0..127). 0 = Acoustic Grand Piano.
-    - 'octave' controls the register. Slash bass is placed one octave below this.
-    - If include_metronome=True, adds a simple quarter-note click at 'tempo' BPM.
+    placement styles (4/4):
+      - "on_1":      hold the chord for the whole bar (hit on beat 1)
+      - "on_all":    hit on each beat (1,2,3,4), quarter-note staccato
+      - "stabs_234": rest on 1; short stabs on 2,3,4
     """
     if not chords:
         raise ValueError("No chords provided.")
@@ -292,18 +319,21 @@ def generate_audio(
     skipped: List[str] = []
     errors:  List[str] = []
 
-    # 1) PrettyMIDI + Instrument
     pm = pretty_midi.PrettyMIDI()
     inst = pretty_midi.Instrument(program=int(program))
 
-    # 2) Lay out chords; each chord sustains for chord_dur seconds
+    # Assume chord_dur == one bar in 4/4
+    beats_per_bar = 4
+    beat_dur = chord_dur / beats_per_bar
     time_cursor = 0.0
+
     for raw in chords:
         token = raw.strip()
         if not token:
             skipped.append(raw)
             time_cursor += chord_dur
             continue
+
         try:
             mids = chord_token_to_midinums(token, base_octave=octave)
         except Exception as e:
@@ -312,34 +342,62 @@ def generate_audio(
             time_cursor += chord_dur
             continue
 
-        start = time_cursor
-        end   = time_cursor + chord_dur
-        for m in mids:
-            inst.notes.append(pretty_midi.Note(
-                velocity=96, pitch=int(m), start=start, end=end
-            ))
-        time_cursor = end
+        # schedule notes according to placement
+        if placement == "on_1":
+            start = time_cursor
+            end   = time_cursor + chord_dur
+            for m in mids:
+                inst.notes.append(pretty_midi.Note(velocity=96, pitch=int(m), start=start, end=end))
+
+        elif placement == "on_all":
+            # play on 1,2,3,4 as short quarters
+            for b in range(beats_per_bar):
+                start = time_cursor + b * beat_dur
+                end   = start + max(0.06, 0.9 * beat_dur)  # slightly detached
+                for m in mids:
+                    inst.notes.append(pretty_midi.Note(velocity=94, pitch=int(m), start=start, end=end))
+
+        elif placement == "stabs_234":
+            # rest on 1; short stabs on 2,3,4
+            stab_sec = max(0.04, stab_ms / 1000.0)
+            for b in (1, 2, 3):  # beats 2,3,4
+                start = time_cursor + b * beat_dur
+                end   = min(start + stab_sec, time_cursor + chord_dur)
+                for m in mids:
+                    inst.notes.append(pretty_midi.Note(velocity=98, pitch=int(m), start=start, end=end))
+        else:
+            # fallback: same as on_1
+            start = time_cursor
+            end   = time_cursor + chord_dur
+            for m in mids:
+                inst.notes.append(pretty_midi.Note(velocity=96, pitch=int(m), start=start, end=end))
+
+        time_cursor += chord_dur
 
     pm.instruments.append(inst)
 
-    # 3) Render via FluidSynth
+    # Render audio
     audio = _render_with_fluidsynth(pm, sf2, SAMPLE_RATE)
 
-    # 4) Optional metronome (quarter notes)
+    # Optional metronome (quarter notes with accent on beat 1)
     if include_metronome:
-        click = _sine_click(SAMPLE_RATE, MET_CLICK_MS, MET_CLICK_FREQ, MET_CLICK_GAIN)
+        click1 = _sine_click(SAMPLE_RATE, MET_CLICK_MS, MET_CLICK_FREQ, MET_CLICK_GAIN_1)
+        clicko = _sine_click(SAMPLE_RATE, MET_CLICK_MS, MET_CLICK_FREQ, MET_CLICK_GAIN_OTH)
+
         sec_per_beat = 60.0 / float(tempo)
-        total_time = pm.get_end_time()
+        total_time   = pm.get_end_time()
         n_beats = int(np.floor(total_time / sec_per_beat)) + 1
         for b in range(n_beats):
             idx = int(b * sec_per_beat * SAMPLE_RATE)
-            _overlay(audio, click, idx)
+            _overlay(audio, click1 if (b % beats_per_bar == 0) else clicko, idx)
+
         audio = np.clip(audio, -1.0, 1.0)
 
-    # 5) WAV bytes
+    # WAV bytes
     buf = io.BytesIO()
     sf.write(buf, audio, SAMPLE_RATE, format="WAV")
     return buf.getvalue(), skipped, errors
+
 
 # --------------------------- Utilities ---------------------------------------
 
