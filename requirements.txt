@@ -1,8 +1,6 @@
 streamlit>=1.36
 numpy
 soundfile
-pretty_midi
-pyfluidsynth
 pychord
 transformers
 tokenizers
