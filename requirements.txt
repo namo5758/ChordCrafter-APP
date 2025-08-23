@@ -1,7 +1,15 @@
+# Core web framework
 streamlit>=1.36
-numpy
-soundfile
-pychord
-transformers
-tokenizers
-torch==2.2.2
+
+# ML model + tokenizer
+torch>=2.2.0
+transformers>=4.40
+tokenizers>=0.19
+
+# Math / array
+numpy>=1.26
+
+# Optional: for data processing / debugging
+pandas>=2.2
+
+# (sound is generated manually with numpy + wave, so no soundfile/fluidsynth needed)
