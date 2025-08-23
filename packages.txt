@@ -1,4 +1,3 @@
-# audio + fluidsynth + build tools
 fluid-synth
 libfluidsynth-dev
 libsndfile1
