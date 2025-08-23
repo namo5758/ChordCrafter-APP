@@ -17,7 +17,7 @@ def main():
     st.subheader("Generate Chord Progressions with Sound")
 
     history = st.text_input("Enter your starting chords (2–4 chords):")
-    placement = st.selectbox("Rhythm/placement (4/4)", ["on_1", "on_all", "stabs_234"], index=0)
+    placement = st.selectbox("Rhythm/placement (4/4)", ["beats", "hold"], index=0)
     tempo = st.slider("Tempo (BPM for metronome)", 40, 200, 120)
     met = st.checkbox("Metronome", value=False)
 
@@ -43,8 +43,8 @@ def main():
                     tempo=120,                  # only used for metronome display rate
                     voice="guitar",             # or "guitar"
                     octave=4,
-                    include_metronome=True,
-                    pattern="beats",            # "beats" = re-trigger on 1-2-3-4; "hold" = sustain
+                    include_metronome=met,
+                    pattern=placement,            # "beats" = re-trigger on 1-2-3-4; "hold" = sustain
                 )
                 if skipped:
                     st.warning("Skipped tokens: " + ", ".join(skipped))
