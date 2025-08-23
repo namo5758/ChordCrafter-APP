@@ -1,14 +1,14 @@
+# web.py (snippet)
 import streamlit as st
 from transformers import PreTrainedTokenizerFast, AutoModelForCausalLM
 import torch
-import chord_audi as ca 
+import chord_audi as ca
 
-torch.classes.__path__ = []     
+torch.classes.__path__ = []
 
 MODEL_DIR = "namo5758/ChordCrafter-Model"
 tokenizer = PreTrainedTokenizerFast.from_pretrained(MODEL_DIR)
 model     = AutoModelForCausalLM.from_pretrained(MODEL_DIR)
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device).eval()
 
@@ -16,7 +16,11 @@ def main():
     st.title("ChordCrafter")
     st.subheader("Generate Chord Progressions with Sound")
 
-    history = st.text_input("Enter your starting chords (2-4 chords):")
+    history = st.text_input("Enter your starting chords (2–4 chords):")
+    placement = st.selectbox("Rhythm/placement (4/4)", ["on_1", "on_all", "stabs_234"], index=0)
+    tempo = st.slider("Tempo (BPM for metronome)", 40, 200, 120)
+    met = st.checkbox("Metronome", value=False)
+
     if history:
         ids     = tokenizer.encode(history + " <bos>", return_tensors="pt").to(device)
         gen_ids = model.generate(
@@ -32,17 +36,25 @@ def main():
         st.code(" ".join(new_chords))
 
         if st.button("Play progression"):
-            audio_bytes, skipped, errors = ca.generate_audio(
+            try:
+                audio_bytes, skipped, errors = ca.generate_audio(
                     new_chords,
-                    program=0,  # piano
-                    include_metronome=False
+                    chord_dur=1.0,             # 1 bar per chord
+                    tempo=tempo,
+                    soundfont_path=None,        # auto-resolve/download
+                    program=0,                  # acoustic grand
+                    octave=4,
+                    include_metronome=met,
+                    placement=placement,
                 )
-            
-            st.write(f"Generated WAV size: {len(audio_bytes):,} bytes")
-            if audio_bytes:
+                if skipped:
+                    st.warning("Skipped tokens: " + ", ".join(skipped))
+                if errors:
+                    st.info("Notes:\n- " + "\n- ".join(errors))
+                st.write(f"Generated WAV size: {len(audio_bytes):,} bytes")
                 st.audio(audio_bytes, format="audio/wav")
-            else:
-                st.error("Audio buffer is empty – nothing to play.")
+            except Exception as e:
+                st.exception(e)
 
 if __name__ == "__main__":
     main()

@@ -14,7 +14,6 @@ import numpy as np
 import soundfile as sf
 import pretty_midi
 
-
 # --------------------------- Globals & Defaults ------------------------------
 
 SAMPLE_RATE   = 22050
@@ -28,11 +27,10 @@ MET_CLICK_MS       = 12.0
 MET_CLICK_GAIN_1   = 0.42    # downbeat
 MET_CLICK_GAIN_OTH = 0.28    # beats 2-4
 
-# Where to look for a local SoundFont inside the repo
 _THIS_DIR = Path(__file__).resolve().parent
 _DEFAULT_SF_CANDIDATES = [
-    _THIS_DIR / "assets"  / "sf2" / "GXSCC_gm_033.sf2",  # correct folder
-    _THIS_DIR / "assests" / "sf2" / "GXSCC_gm_033.sf2",  # misspelled folder
+    _THIS_DIR / "assets"  / "sf2" / "GXSCC_gm_033.sf2",
+    _THIS_DIR / "assests" / "sf2" / "GXSCC_gm_033.sf2",
 ]
 
 # Cloud-friendly auto-download target (use /tmp on Streamlit Cloud)
@@ -41,10 +39,8 @@ SF2_BASENAME = "GXSCC_gm_033.sf2"
 SF2_DIR      = Path(tempfile.gettempdir()) / "sf2"
 SF2_PATH     = SF2_DIR / SF2_BASENAME
 
-
 # --------------------------- Token → MIDI Parser -----------------------------
 
-# letter to semitone (plus common enharmonics)
 _SEMITONE = {
     "C": 0,  "Cs": 1,  "Db": 1,
     "D": 2,  "Ds": 3,  "Eb": 3,
@@ -55,7 +51,6 @@ _SEMITONE = {
     "B": 11,
 }
 
-# normalize odd spellings from the tokenizer
 _RE_MIN = re.compile(r"(?i)\bmin(?=\d|$)")
 _RE_MAJ = re.compile(r"(?i)\bmaj(?=\d|$)")
 
@@ -82,15 +77,8 @@ def _letter_acc_to_semi(letter: str, acc: str) -> int:
     return (base_semi + offs) % 12
 
 def _parse_root_bass(token: str) -> Tuple[int, Optional[int], str]:
-    """
-    Split token into (root_semi, optional bass_semi, rest).
-    Handles:
-      - F/A, D/Fs, Bb/C
-      - Gsus4 (does NOT become G# + 'us4')
-    """
     token = token.strip()
 
-    # Exact slash chord like F/A or D/Fs
     m_plain_slash = re.match(r"^([A-G])([sb]*)/([A-G])([sb]*)$", token)
     if m_plain_slash:
         rL, rA, bL, bA = m_plain_slash.groups()
@@ -98,7 +86,6 @@ def _parse_root_bass(token: str) -> Tuple[int, Optional[int], str]:
         bass_semi = _letter_acc_to_semi(bL, bA or "")
         return root_semi, bass_semi, ""
 
-    # General case
     if "/" in token:
         main, bass = token.split("/", 1)
         bass = bass.strip()
@@ -112,7 +99,6 @@ def _parse_root_bass(token: str) -> Tuple[int, Optional[int], str]:
     acc  = acc or ""
     rest = rest or ""
 
-    # Disambiguate Gsus* vs G + '#'
     if acc == "s" and rest.startswith("us"):
         rest = "sus" + rest[2:]
         acc = ""
@@ -121,7 +107,7 @@ def _parse_root_bass(token: str) -> Tuple[int, Optional[int], str]:
 
     bass_semi: Optional[int] = None
     if bass:
-        m2 = re.match(r"^([A-G])([sb]*)", bass)  # stop at non-[sb]
+        m2 = re.match(r"^([A-G])([sb]*)", bass)
         if m2:
             bL, bA = m2.groups()
             bass_semi = _letter_acc_to_semi(bL, (bA or ""))
@@ -134,15 +120,14 @@ def _base_quality_intervals(rest: str) -> List[int]:
     if "sus4" in r: return [0, 5, 7]
     if "dim"  in r: return [0, 3, 6]
     if "aug"  in r: return [0, 4, 8]
-    if re.search(r"(^|[^a-z])m(?!aj)", r):  # minor (but not 'maj')
+    if re.search(r"(^|[^a-z])m(?!aj)", r):
         return [0, 3, 7]
-    return [0, 4, 7]  # default major
+    return [0, 4, 7]
 
 def _apply_extensions(base_ints: List[int], rest: str) -> List[int]:
     r = rest.lower()
     s = set(base_ints)
 
-    # 6/7/maj7
     if "maj7" in r:
         s.add(11)
     elif re.search(r"(?<!\d)7(?!\d)", r):
@@ -150,17 +135,14 @@ def _apply_extensions(base_ints: List[int], rest: str) -> List[int]:
     if re.search(r"(?<!\d)6(?!\d)", r):
         s.add(9)
 
-    # add*
     if "add9"  in r: s.add(14)
     if "add11" in r: s.add(17)
     if "add13" in r: s.add(21)
 
-    # compound tensions
     if re.search(r"(?<!\d)9(?!\d)",  r): s.add(14)
     if re.search(r"(?<!\d)11(?!\d)", r): s.add(17)
     if re.search(r"(?<!\d)13(?!\d)", r): s.add(21)
 
-    # alterations
     if "b9"  in r: s.add(13)
     if "#9"  in r: s.add(15)
     if "#11" in r: s.add(18)
@@ -169,18 +151,11 @@ def _apply_extensions(base_ints: List[int], rest: str) -> List[int]:
     return sorted(s)
 
 def chord_token_to_midinums(token: str, base_octave: int = DEFAULT_OCT) -> List[int]:
-    """
-    Convert token into MIDI notes.
-    - If no quality given (e.g., 'F/A'), assume MAJOR triad on root.
-    - Root chord voiced around (base_octave+1); slash bass one octave below.
-    """
     token = token.strip()
     if not token:
         raise ValueError("Empty chord token")
     if token.endswith("/"):
         raise ValueError(f"Incomplete slash chord '{token}'")
-
-    # normalize rare prefix like 'sA...' (seen in some dumps)
     if re.match(r"^s([A-G])", token):
         token = token[1] + "s" + token[1:]
 
@@ -198,7 +173,6 @@ def chord_token_to_midinums(token: str, base_octave: int = DEFAULT_OCT) -> List[
     if not out:
         raise ValueError(f"No playable pitches for '{token}'")
     return out
-
 
 # --------------------------- Rendering Helpers -------------------------------
 
@@ -227,7 +201,6 @@ def _download_sf2_to_tmp() -> str:
     if SF2_PATH.exists():
         return str(SF2_PATH)
 
-    # download and extract the first .sf2 inside the ZIP
     r = requests.get(SF2_URL, timeout=60)
     r.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
@@ -241,60 +214,76 @@ def _download_sf2_to_tmp() -> str:
     return str(SF2_PATH)
 
 def _resolve_soundfont_path(user_path: Optional[Union[str, Path]]) -> str:
-    """
-    Priority:
-      1) user_path (if provided and exists)
-      2) local candidates (./assets/sf2/... or ./assests/sf2/...)
-      3) auto-download to /tmp and use that
-    """
     if user_path:
         found = _try_existing_path(user_path)
         if found:
             return found
-
     for cand in _DEFAULT_SF_CANDIDATES:
         found = _try_existing_path(cand)
         if found:
             return found
-
+    # last resort: download to /tmp
     return _download_sf2_to_tmp()
 
 def _render_with_fluidsynth(pm: pretty_midi.PrettyMIDI, sf2_path: str, sr: int) -> np.ndarray:
-    """
-    Render PrettyMIDI to audio using a SoundFont via FluidSynth.
-
-    pretty_midi signatures differ by version:
-      - fluidsynth(sample_rate=..., sf2_path=...)
-      - fluidsynth(samplerate=...,  sf2_path=...)
-      - fluidsynth(fs=...,          sf2_path=...)
-    Detect parameter names and call with keywords to avoid positional mixups.
-    """
+    # Detect pretty_midi fluidsynth signature at runtime
     sig = inspect.signature(pm.fluidsynth)
     params = sig.parameters
-
     kwargs = {}
-    if "sample_rate" in params:
-        kwargs["sample_rate"] = sr
-    elif "samplerate" in params:
-        kwargs["samplerate"] = sr
-    elif "fs" in params:
-        kwargs["fs"] = sr
+    if "sample_rate" in params:   kwargs["sample_rate"] = sr
+    elif "samplerate" in params:  kwargs["samplerate"]  = sr
+    elif "fs" in params:          kwargs["fs"]          = sr
+    kwargs["sf2_path"] = sf2_path
+    return pm.fluidsynth(**kwargs)
 
-    if "sf2_path" in params:
-        kwargs["sf2_path"] = sf2_path
-    else:
-        kwargs["sf2_path"] = sf2_path  # defensive fallback
+def _render_with_fallback(pm: pretty_midi.PrettyMIDI, sr: int) -> np.ndarray:
+    """
+    Pure-Python synth fallback (no FluidSynth). Simple detuned sine stack with ADSR.
+    Not a real piano, but keeps the app working on hosts without libfluidsynth.
+    """
+    T = int(sr * (pm.get_end_time() + 0.1))
+    audio = np.zeros(T, dtype=np.float32)
 
-    audio = pm.fluidsynth(**kwargs)
-    audio = np.asarray(audio, dtype=np.float32)
-    return np.clip(audio, -1.0, 1.0)
+    def env(t):
+        # very simple ADSR (A=10ms, D=150ms, S=0.6, R=120ms)
+        A, D, S, R = 0.01, 0.15, 0.6, 0.12
+        y = np.zeros_like(t)
+        a = t < A
+        d = (t >= A) & (t < A + D)
+        s = (t >= A + D)
+        y[a] = (t[a] / A)
+        y[d] = 1.0 - (1.0 - S) * ((t[d] - A) / D)
+        y[s] = S * np.exp(-3.0 * (t[s] - (A + D)))
+        return y
 
+    for inst in pm.instruments:
+        for n in inst.notes:
+            f0 = 440.0 * 2 ** ((n.pitch - 69) / 12)
+            start = int(n.start * sr)
+            end   = int(n.end   * sr)
+            if end <= start or start >= len(audio):
+                continue
+            end = min(end, len(audio))
+            t = np.arange(end - start) / sr
+            # 3 sines (fundamental + two detuned partials)
+            sig = (
+                0.65*np.sin(2*np.pi*f0*t) +
+                0.25*np.sin(2*np.pi*2*f0*1.002*t) +
+                0.10*np.sin(2*np.pi*3*f0*0.998*t)
+            ) * env(t) * (n.velocity/127.0)
+            audio[start:end] += sig.astype(np.float32)
+
+    # normalize lightly
+    mx = np.max(np.abs(audio)) if audio.size else 0.0
+    if mx > 0.99:
+        audio = 0.99 * audio / mx
+    return audio
 
 # --------------------------- Public API --------------------------------------
 
 def generate_audio(
     chords: List[str],
-    chord_dur: float = 1.0,           # seconds per chord (treat as 1 bar of 4/4)
+    chord_dur: float = 1.0,           # seconds per chord (1 bar of 4/4)
     tempo: int = DEFAULT_TEMPO,       # metronome tempo
     soundfont_path: Optional[Union[str, Path]] = None,  # None → resolve/download
     program: int = DEFAULT_PROG,      # GM program (0..127)
@@ -314,15 +303,12 @@ def generate_audio(
     if not chords:
         raise ValueError("No chords provided.")
 
-    sf2 = _resolve_soundfont_path(soundfont_path)
-
     skipped: List[str] = []
     errors:  List[str] = []
 
     pm = pretty_midi.PrettyMIDI()
     inst = pretty_midi.Instrument(program=int(program))
 
-    # Assume chord_dur == one bar in 4/4
     beats_per_bar = 4
     beat_dur = chord_dur / beats_per_bar
     time_cursor = 0.0
@@ -342,23 +328,18 @@ def generate_audio(
             time_cursor += chord_dur
             continue
 
-        # schedule notes according to placement
         if placement == "on_1":
             start = time_cursor
             end   = time_cursor + chord_dur
             for m in mids:
                 inst.notes.append(pretty_midi.Note(velocity=96, pitch=int(m), start=start, end=end))
-
         elif placement == "on_all":
-            # play on 1,2,3,4 as short quarters
             for b in range(beats_per_bar):
                 start = time_cursor + b * beat_dur
-                end   = start + max(0.06, 0.9 * beat_dur)  # slightly detached
+                end   = start + max(0.06, 0.9 * beat_dur)
                 for m in mids:
                     inst.notes.append(pretty_midi.Note(velocity=94, pitch=int(m), start=start, end=end))
-
         elif placement == "stabs_234":
-            # rest on 1; short stabs on 2,3,4
             stab_sec = max(0.04, stab_ms / 1000.0)
             for b in (1, 2, 3):  # beats 2,3,4
                 start = time_cursor + b * beat_dur
@@ -366,7 +347,6 @@ def generate_audio(
                 for m in mids:
                     inst.notes.append(pretty_midi.Note(velocity=98, pitch=int(m), start=start, end=end))
         else:
-            # fallback: same as on_1
             start = time_cursor
             end   = time_cursor + chord_dur
             for m in mids:
@@ -376,35 +356,35 @@ def generate_audio(
 
     pm.instruments.append(inst)
 
-    # Render audio
-    audio = _render_with_fluidsynth(pm, sf2, SAMPLE_RATE)
+    # Try FluidSynth first, then fall back if unavailable
+    audio = None
+    sf2 = None
+    try:
+        sf2 = _resolve_soundfont_path(soundfont_path)
+        audio = _render_with_fluidsynth(pm, sf2, SAMPLE_RATE)
+    except Exception as e:
+        errors.append(f"FluidSynth rendering failed ({type(e).__name__}: {e}). Using built-in synth.")
+        audio = _render_with_fallback(pm, SAMPLE_RATE)
 
-    # Optional metronome (quarter notes with accent on beat 1)
+    # Optional metronome (accent beat 1)
     if include_metronome:
         click1 = _sine_click(SAMPLE_RATE, MET_CLICK_MS, MET_CLICK_FREQ, MET_CLICK_GAIN_1)
         clicko = _sine_click(SAMPLE_RATE, MET_CLICK_MS, MET_CLICK_FREQ, MET_CLICK_GAIN_OTH)
-
         sec_per_beat = 60.0 / float(tempo)
         total_time   = pm.get_end_time()
         n_beats = int(np.floor(total_time / sec_per_beat)) + 1
         for b in range(n_beats):
             idx = int(b * sec_per_beat * SAMPLE_RATE)
-            _overlay(audio, click1 if (b % beats_per_bar == 0) else clicko, idx)
-
+            _overlay(audio, click1 if (b % 4 == 0) else clicko, idx)
         audio = np.clip(audio, -1.0, 1.0)
 
-    # WAV bytes
     buf = io.BytesIO()
-    sf.write(buf, audio, SAMPLE_RATE, format="WAV")
+    sf.write(buf, audio.astype(np.float32), SAMPLE_RATE, format="WAV")
     return buf.getvalue(), skipped, errors
-
 
 # --------------------------- Utilities ---------------------------------------
 
 def test_tone(freq: float = 440.0, duration: float = 1.0) -> bytes:
-    """
-    Quick A/B check: returns a plain sine wave tone as WAV bytes.
-    """
     t = np.linspace(0, duration, int(SAMPLE_RATE * duration), False)
     snd = 0.5 * np.sin(2 * np.pi * freq * t).astype(np.float32)
     buf = io.BytesIO()
