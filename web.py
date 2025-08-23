@@ -32,8 +32,12 @@ def main():
         st.code(" ".join(new_chords))
 
         if st.button("Play progression"):
-            audio_bytes, skipped, errors = ca.generate_audio(new_chords, chord_dur=1.0)
-
+            audio_bytes, skipped, errors = ca.generate_audio(
+                    new_chords,
+                    program=0,  # piano
+                    include_metronome=False
+                )
+            
             st.write(f"Generated WAV size: {len(audio_bytes):,} bytes")
             if audio_bytes:
                 st.audio(audio_bytes, format="audio/wav")
