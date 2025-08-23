@@ -1,0 +1,10 @@
+# audio + fluidsynth + build tools
+fluid-synth
+libfluidsynth-dev
+libsndfile1
+libsndfile1-dev
+libasound2
+libasound2-dev
+libjack0
+libjack-jackd2-0
+build-essential

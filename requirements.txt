@@ -1,8 +1,9 @@
-streamlit
-torch==2.6.0
-transformers==4.52.4
-pychord 
+streamlit>=1.36
+numpy
 soundfile
-numpy 
-scipy
 pretty_midi
+pyfluidsynth
+pychord
+transformers
+tokenizers
+torch==2.2.2
