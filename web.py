@@ -39,11 +39,12 @@ def main():
             try:
                 audio_bytes, skipped, errors = ca.generate_audio(
                     new_chords,
-                    chord_dur=2.0,           # 1 bar @ 120 BPM
-                    tempo=120,
-                    instrument="guitar",     # try "epiano", "organ", "saw", "pad", etc.
+                    chord_dur=1.6,              # ~1.6s per chord → 0.4s per beat
+                    tempo=120,                  # only used for metronome display rate
+                    voice="guitar",             # or "guitar"
+                    octave=4,
                     include_metronome=True,
-                    four_four_restrike=True
+                    pattern="beats",            # "beats" = re-trigger on 1-2-3-4; "hold" = sustain
                 )
                 if skipped:
                     st.warning("Skipped tokens: " + ", ".join(skipped))
